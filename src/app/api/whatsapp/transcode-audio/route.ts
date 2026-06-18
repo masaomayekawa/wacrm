@@ -11,6 +11,7 @@ import {
   RATE_LIMITS,
 } from '@/lib/rate-limit'
 import { buildFfmpegArgs } from '@/lib/whatsapp/audio-transcode'
+import { hasBetaFeature, CHAT_MEDIA_BETA } from '@/lib/auth/beta-features'
 
 // ffmpeg + temp-file I/O need the Node runtime (not Edge).
 export const runtime = 'nodejs'
@@ -67,6 +68,20 @@ export async function POST(request: Request) {
     const limit = checkRateLimit(`transcode:${user.id}`, RATE_LIMITS.transcodeAudio)
     if (!limit.success) {
       return rateLimitResponse(limit)
+    }
+
+    // Voice notes are part of the beta-gated media feature — only opted-in
+    // accounts may transcode (mirrors the send route + client gate).
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('beta_features')
+      .eq('user_id', user.id)
+      .maybeSingle()
+    if (!hasBetaFeature(profile?.beta_features, CHAT_MEDIA_BETA)) {
+      return NextResponse.json(
+        { error: 'Voice notes are not enabled for your account.' },
+        { status: 403 },
+      )
     }
 
     const ffmpegPath = resolveFfmpegPath()

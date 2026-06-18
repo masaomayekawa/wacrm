@@ -28,6 +28,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useCan } from "@/hooks/use-can";
+import { useBetaFeature } from "@/hooks/use-beta-feature";
+import { CHAT_MEDIA_BETA } from "@/lib/auth/beta-features";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -165,6 +167,10 @@ export function MessageComposer({
   const readOnly = !canSend;
   // Media (like free-form text) is only allowed inside the 24h window.
   const inputsDisabled = readOnly || sessionExpired;
+  // Beta-gated: only accounts opted into 'chat_media' see the attach
+  // menu / voice recorder. Everyone else gets the original text + template
+  // composer with no visible change.
+  const chatMediaEnabled = useBetaFeature(CHAT_MEDIA_BETA);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -427,37 +433,42 @@ export function MessageComposer({
         </div>
       )}
 
-      {/* Hidden file inputs driven by the attach menu. */}
-      <input
-        ref={imageInputRef}
-        type="file"
-        accept={PICKER_ACCEPT.image}
-        className="hidden"
-        onChange={(e) => {
-          handlePicked("image", e.target.files?.[0]);
-          e.target.value = "";
-        }}
-      />
-      <input
-        ref={videoInputRef}
-        type="file"
-        accept={PICKER_ACCEPT.video}
-        className="hidden"
-        onChange={(e) => {
-          handlePicked("video", e.target.files?.[0]);
-          e.target.value = "";
-        }}
-      />
-      <input
-        ref={documentInputRef}
-        type="file"
-        accept={PICKER_ACCEPT.document}
-        className="hidden"
-        onChange={(e) => {
-          handlePicked("document", e.target.files?.[0]);
-          e.target.value = "";
-        }}
-      />
+      {/* Hidden file inputs driven by the attach menu — only mounted when
+          the beta feature is on. */}
+      {chatMediaEnabled && (
+        <>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept={PICKER_ACCEPT.image}
+            className="hidden"
+            onChange={(e) => {
+              handlePicked("image", e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept={PICKER_ACCEPT.video}
+            className="hidden"
+            onChange={(e) => {
+              handlePicked("video", e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={documentInputRef}
+            type="file"
+            accept={PICKER_ACCEPT.document}
+            className="hidden"
+            onChange={(e) => {
+              handlePicked("document", e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+        </>
+      )}
 
       {draft ? (
         <MediaDraftPreview
@@ -494,44 +505,47 @@ export function MessageComposer({
         </div>
       ) : (
         <div className="flex items-end gap-2">
-          {/* Attach menu — photo / video / document / voice. */}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              disabled={inputsDisabled || busy}
-              title={
-                readOnly
-                  ? "Read-only — your role can't send messages"
-                  : inputsDisabled
-                    ? undefined
-                    : "Attach media"
-              }
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {busy ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Paperclip className="h-4 w-4" />
-              )}
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="border-border bg-popover">
-              <DropdownMenuItem onClick={() => imageInputRef.current?.click()}>
-                <ImageIcon className="mr-2 h-4 w-4" />
-                Photo
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => videoInputRef.current?.click()}>
-                <Video className="mr-2 h-4 w-4" />
-                Video
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => documentInputRef.current?.click()}>
-                <FileText className="mr-2 h-4 w-4" />
-                Document
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => void startRecording()}>
-                <Mic className="mr-2 h-4 w-4" />
-                Voice note
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Attach menu — photo / video / document / voice. Beta-gated:
+              hidden entirely for accounts not opted into 'chat_media'. */}
+          {chatMediaEnabled && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                disabled={inputsDisabled || busy}
+                title={
+                  readOnly
+                    ? "Read-only — your role can't send messages"
+                    : inputsDisabled
+                      ? undefined
+                      : "Attach media"
+                }
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {busy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Paperclip className="h-4 w-4" />
+                )}
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="border-border bg-popover">
+                <DropdownMenuItem onClick={() => imageInputRef.current?.click()}>
+                  <ImageIcon className="mr-2 h-4 w-4" />
+                  Photo
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => videoInputRef.current?.click()}>
+                  <Video className="mr-2 h-4 w-4" />
+                  Video
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => documentInputRef.current?.click()}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  Document
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void startRecording()}>
+                  <Mic className="mr-2 h-4 w-4" />
+                  Voice note
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
 
           <GatedButton
             variant="ghost"
@@ -586,7 +600,14 @@ export function MessageComposer({
           `items-end` buttons below the textarea. Indented to line up
           under the textarea left edge. */}
       {!draft && !recording && (
-        <p className="mt-1 pl-[5.5rem] text-[10px] text-muted-foreground">
+        <p
+          className={cn(
+            "mt-1 text-[10px] text-muted-foreground",
+            // Line up under the textarea: one button (template) when the
+            // attach menu is hidden, two when the beta feature adds it.
+            chatMediaEnabled ? "pl-[5.5rem]" : "pl-11",
+          )}
+        >
           Type &apos;/&apos; for quick replies
         </p>
       )}
