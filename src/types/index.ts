@@ -274,6 +274,37 @@ export interface MessageTemplate {
   created_at: string;
 }
 
+/** Meta's raw WhatsApp Flows status enum — see migration 027. */
+export type WhatsAppFlowStatus =
+  | 'DRAFT'
+  | 'PUBLISHED'
+  | 'DEPRECATED'
+  | 'THROTTLED'
+  | 'BLOCKED';
+
+/**
+ * A WhatsApp Flow synced (read-only) from Meta's `/{waba_id}/flows`
+ * edge — unrelated to this app's own local automation `Flow` type
+ * (`src/lib/flows/types.ts`). See migration 027 for why these are
+ * separate tables/types instead of one merged concept.
+ */
+export interface WhatsAppFlow {
+  id: string;
+  account_id: string;
+  synced_by?: string;
+  meta_flow_id: string;
+  name: string;
+  status: WhatsAppFlowStatus;
+  categories?: string[];
+  json_version?: string;
+  data_api_version?: string;
+  endpoint_uri?: string;
+  validation_errors?: unknown;
+  synced_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Pipeline {
   id: string;
   user_id: string;
