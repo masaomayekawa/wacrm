@@ -21,10 +21,15 @@ import {
   LayoutTemplate,
   Loader2,
 } from "lucide-react";
-import { extractVariableIndices } from "@/lib/whatsapp/template-validators";
+import {
+  extractVariableIndices,
+  extractNamedVariables,
+} from "@/lib/whatsapp/template-validators";
 
 export interface TemplateSendValues {
   body: string[];
+  /** Values for {{name}} body variables — set instead of `body` for NAMED templates. */
+  bodyNamed?: Record<string, string>;
   headerText?: string;
   buttonParams?: Record<number, string>;
 }
@@ -35,11 +40,19 @@ interface TemplatePickerProps {
   onSelect: (template: MessageTemplate, values: TemplateSendValues) => void;
 }
 
-function renderBodyPreview(body: string, params: string[]): string {
-  return body.replace(/\{\{(\d+)\}\}/g, (_, raw) => {
-    const idx = Number(raw) - 1;
-    const value = params[idx];
-    return value && value.trim().length > 0 ? value : `{{${raw}}}`;
+function renderBodyPreview(
+  body: string,
+  params: string[],
+  namedParams: Record<string, string>,
+): string {
+  return body.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (whole, raw) => {
+    if (/^\d+$/.test(raw)) {
+      const idx = Number(raw) - 1;
+      const value = params[idx];
+      return value && value.trim().length > 0 ? value : whole;
+    }
+    const value = namedParams[raw];
+    return value && value.trim().length > 0 ? value : whole;
   });
 }
 
@@ -56,12 +69,24 @@ interface UrlButtonSlot {
  */
 function collectVariableSlots(template: MessageTemplate): {
   bodyVars: number[];
+  namedBodyVars: string[];
   headerVarCount: number;
+  namedHeaderVar?: string;
   urlButtonSlots: UrlButtonSlot[];
 } {
-  const bodyVars = extractVariableIndices(template.body_text);
-  const headerVarCount =
+  // A template uses either POSITIONAL ({{1}}) or NAMED ({{name}})
+  // variables, never both — check named first since positional
+  // extraction on a NAMED body/header always comes back empty anyway.
+  const namedBodyVars = extractNamedVariables(template.body_text);
+  const bodyVars =
+    namedBodyVars.length > 0 ? [] : extractVariableIndices(template.body_text);
+  const namedHeaderVar =
     template.header_type === "text" && template.header_content
+      ? extractNamedVariables(template.header_content)[0]
+      : undefined;
+  const headerVarCount = namedHeaderVar
+    ? 1
+    : template.header_type === "text" && template.header_content
       ? extractVariableIndices(template.header_content).length
       : 0;
   const urlButtonSlots: UrlButtonSlot[] = [];
@@ -70,7 +95,7 @@ function collectVariableSlots(template: MessageTemplate): {
       urlButtonSlots.push({ index: i, text: b.text, url: b.url });
     }
   });
-  return { bodyVars, headerVarCount, urlButtonSlots };
+  return { bodyVars, namedBodyVars, headerVarCount, namedHeaderVar, urlButtonSlots };
 }
 
 export function TemplatePicker({
@@ -82,6 +107,7 @@ export function TemplatePicker({
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<MessageTemplate | null>(null);
   const [params, setParams] = useState<string[]>([]);
+  const [namedParams, setNamedParams] = useState<Record<string, string>>({});
   const [headerText, setHeaderText] = useState<string>("");
   const [buttonParams, setButtonParams] = useState<Record<number, string>>({});
 
@@ -132,6 +158,7 @@ export function TemplatePicker({
   function resetSelection() {
     setSelected(null);
     setParams([]);
+    setNamedParams({});
     setHeaderText("");
     setButtonParams({});
   }
@@ -145,6 +172,7 @@ export function TemplatePicker({
     const slots = collectVariableSlots(template);
     const noInputsNeeded =
       slots.bodyVars.length === 0 &&
+      slots.namedBodyVars.length === 0 &&
       slots.headerVarCount === 0 &&
       slots.urlButtonSlots.length === 0;
     if (noInputsNeeded) {
@@ -154,6 +182,7 @@ export function TemplatePicker({
     }
     setSelected(template);
     setParams(new Array(slots.bodyVars.length).fill(""));
+    setNamedParams(Object.fromEntries(slots.namedBodyVars.map((n) => [n, ""])));
     setHeaderText("");
     setButtonParams({});
   }
@@ -161,6 +190,11 @@ export function TemplatePicker({
   function confirm() {
     if (!selected) return;
     const values: TemplateSendValues = { body: params };
+    if (Object.keys(namedParams).length > 0) {
+      values.bodyNamed = Object.fromEntries(
+        Object.entries(namedParams).map(([k, v]) => [k, v.trim()]),
+      );
+    }
     if (headerText.trim()) values.headerText = headerText.trim();
     if (Object.keys(buttonParams).length > 0) {
       values.buttonParams = Object.fromEntries(
@@ -179,6 +213,7 @@ export function TemplatePicker({
     !!selected &&
     !!slots &&
     slots.bodyVars.every((_, i) => (params[i] ?? "").trim().length > 0) &&
+    slots.namedBodyVars.every((n) => (namedParams[n] ?? "").trim().length > 0) &&
     (slots.headerVarCount === 0 || headerText.trim().length > 0) &&
     slots.urlButtonSlots.every(
       (s) => (buttonParams[s.index] ?? "").trim().length > 0,
@@ -251,7 +286,7 @@ export function TemplatePicker({
             <div className="rounded-md border border-border bg-background/50 p-3">
               <p className="mb-1 text-xs text-muted-foreground">Preview</p>
               <p className="whitespace-pre-wrap text-sm text-popover-foreground">
-                {renderBodyPreview(selected.body_text, params)}
+                {renderBodyPreview(selected.body_text, params, namedParams)}
               </p>
               {selected.footer_text && (
                 <p className="mt-2 text-xs italic text-muted-foreground">
@@ -262,7 +297,7 @@ export function TemplatePicker({
             {slots && slots.headerVarCount > 0 && (
               <div className="space-y-1">
                 <Label className="text-xs text-popover-foreground">
-                  {`Header {{1}}`}
+                  {`Header {{${slots.namedHeaderVar ?? "1"}}}`}
                 </Label>
                 <Input
                   value={headerText}
@@ -283,6 +318,19 @@ export function TemplatePicker({
                     setParams(next);
                   }}
                   placeholder={`Value for {{${v}}}`}
+                  className="border-border bg-muted text-foreground placeholder:text-muted-foreground"
+                />
+              </div>
+            ))}
+            {slots?.namedBodyVars.map((name) => (
+              <div key={name} className="space-y-1">
+                <Label className="text-xs text-popover-foreground">{`Body {{${name}}}`}</Label>
+                <Input
+                  value={namedParams[name] ?? ""}
+                  onChange={(e) =>
+                    setNamedParams((prev) => ({ ...prev, [name]: e.target.value }))
+                  }
+                  placeholder={`Value for {{${name}}}`}
                   className="border-border bg-muted text-foreground placeholder:text-muted-foreground"
                 />
               </div>

@@ -45,7 +45,7 @@ import {
   type SendMediaPayload,
 } from "./message-composer";
 import { deleteAccountMedia } from "@/lib/storage/upload-media";
-import { TemplatePicker } from "./template-picker";
+import { TemplatePicker, type TemplateSendValues } from "./template-picker";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
 
@@ -55,10 +55,17 @@ interface ReplyDraft {
   preview: string;
 }
 
-function renderTemplateBody(body: string, params: string[]): string {
-  return body.replace(/\{\{(\d+)\}\}/g, (_, raw) => {
-    const idx = Number(raw) - 1;
-    return params[idx] ?? `{{${raw}}}`;
+function renderTemplateBody(
+  body: string,
+  params: string[],
+  namedParams?: Record<string, string>,
+): string {
+  return body.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (whole, raw) => {
+    if (/^\d+$/.test(raw)) {
+      const idx = Number(raw) - 1;
+      return params[idx] ?? whole;
+    }
+    return namedParams?.[raw] ?? whole;
   });
 }
 
@@ -581,17 +588,14 @@ export function MessageThread({
   }, []);
 
   const handleSendTemplate = useCallback(
-    async (
-      template: MessageTemplate,
-      values: {
-        body: string[];
-        headerText?: string;
-        buttonParams?: Record<number, string>;
-      },
-    ) => {
+    async (template: MessageTemplate, values: TemplateSendValues) => {
       if (!conversation) return;
 
-      const renderedBody = renderTemplateBody(template.body_text, values.body);
+      const renderedBody = renderTemplateBody(
+        template.body_text,
+        values.body,
+        values.bodyNamed,
+      );
       const tempId = `temp-${Date.now()}`;
 
       const optimisticMsg: Message = {
@@ -621,6 +625,7 @@ export function MessageThread({
             // back if the template row isn't found locally.
             template_message_params: {
               body: values.body,
+              bodyNamed: values.bodyNamed,
               headerText: values.headerText,
               buttonParams: values.buttonParams,
             },

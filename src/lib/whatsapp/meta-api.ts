@@ -399,6 +399,7 @@ export async function sendTemplateMessage(
       // Legacy callers pass body values in `params`; fold them into
       // `messageParams.body` so the new path covers them too.
       body: messageParams?.body ?? params,
+      bodyNamed: messageParams?.bodyNamed,
       headerText: messageParams?.headerText,
       headerMediaUrl: messageParams?.headerMediaUrl,
       headerMediaId: messageParams?.headerMediaId,

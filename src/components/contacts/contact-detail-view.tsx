@@ -347,6 +347,7 @@ export function ContactDetailView({
           template_language: template.language,
           template_message_params: {
             body: values.body,
+            bodyNamed: values.bodyNamed,
             headerText: values.headerText,
             buttonParams: values.buttonParams,
           },

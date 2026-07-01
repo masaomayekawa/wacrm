@@ -72,6 +72,27 @@ export function extractVariableIndices(text: string): number[] {
 }
 
 /**
+ * Meta templates use either POSITIONAL ({{1}}, {{2}}, …) or NAMED
+ * ({{customer_name}}, …) variables — a template is always one or the
+ * other, never mixed. Templates authored directly in Meta's WhatsApp
+ * Manager (rather than through this app's editor) commonly use NAMED.
+ * Extracts named placeholders in first-seen order, deduped.
+ */
+export function extractNamedVariables(text: string): string[] {
+  const matches = text.matchAll(/\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of matches) {
+    const name = m[1];
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+/**
  * Meta requires contiguous, 1-indexed variables. `{{1}} {{3}}` is
  * invalid — it must be `{{1}} {{2}}`.
  */

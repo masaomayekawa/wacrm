@@ -31,12 +31,18 @@
  */
 
 import type { MessageTemplate, TemplateButton } from '@/types';
-import { extractVariableIndices } from './template-validators';
+import { extractVariableIndices, extractNamedVariables } from './template-validators';
 
 export interface SendTimeParams {
   /** Values for body {{1}}, {{2}}, … indexed by variable position. */
   body?: string[];
-  /** Value for TEXT-header {{1}}, when the header has a variable. */
+  /**
+   * Values for body {{name}}, {{name2}}, … keyed by variable name.
+   * Used instead of `body` when the template uses Meta's NAMED
+   * parameter format (see `extractNamedVariables`).
+   */
+  bodyNamed?: Record<string, string>;
+  /** Value for TEXT-header {{1}} (or {{name}} for NAMED), when the header has a variable. */
   headerText?: string;
   /** Override the template's static media URL for this send. */
   headerMediaUrl?: string;
@@ -62,7 +68,7 @@ export type MetaSendComponent =
     };
 
 type MetaSendParameter =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; parameter_name?: string }
   | { type: 'image'; image: { link?: string; id?: string } }
   | { type: 'video'; video: { link?: string; id?: string } }
   | { type: 'document'; document: { link?: string; id?: string } }
@@ -77,20 +83,27 @@ function buildHeaderComponent(
   if (!headerType) return null;
 
   if (headerType === 'text') {
-    // TEXT header with {{1}} → need a value. Static text headers
-    // (no variables) just ride along inside the template itself; no
-    // header component required on send.
-    const varCount = extractVariableIndices(template.header_content ?? '').length;
+    // TEXT header with {{1}} (or {{name}}) → need a value. Static text
+    // headers (no variables) just ride along inside the template
+    // itself; no header component required on send.
+    const namedVar = extractNamedVariables(template.header_content ?? '')[0];
+    const varCount = namedVar
+      ? 1
+      : extractVariableIndices(template.header_content ?? '').length;
     if (varCount === 0) return null;
     const value = params.headerText;
     if (!value || !value.trim()) {
       throw new Error(
-        'Header text variable {{1}} requires a value — pass headerText.',
+        `Header text variable {{${namedVar ?? '1'}}} requires a value — pass headerText.`,
       );
     }
     return {
       type: 'header',
-      parameters: [{ type: 'text', text: value }],
+      parameters: [
+        namedVar
+          ? { type: 'text', text: value, parameter_name: namedVar }
+          : { type: 'text', text: value },
+      ],
     };
   }
 
@@ -127,6 +140,25 @@ function buildBodyComponent(
   template: MessageTemplate,
   params: SendTimeParams,
 ): MetaSendComponent | null {
+  const namedVars = extractNamedVariables(template.body_text);
+  if (namedVars.length > 0) {
+    const bodyNamed = params.bodyNamed ?? {};
+    const missing = namedVars.filter((n) => !bodyNamed[n]?.trim());
+    if (missing.length > 0) {
+      throw new Error(
+        `Body variable(s) ${missing.map((n) => `{{${n}}}`).join(', ')} require a value.`,
+      );
+    }
+    return {
+      type: 'body',
+      parameters: namedVars.map((n) => ({
+        type: 'text',
+        text: String(bodyNamed[n]),
+        parameter_name: n,
+      })),
+    };
+  }
+
   const varCount = extractVariableIndices(template.body_text).length;
   const body = params.body ?? [];
   if (varCount === 0 && body.length === 0) return null;
