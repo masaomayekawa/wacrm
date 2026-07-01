@@ -1,3 +1,5 @@
+SET search_path = public, extensions;
+
 -- ============================================================
 -- Chat actions: reply linkage + reactions
 --

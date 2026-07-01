@@ -130,15 +130,18 @@ export async function POST() {
         skipped++
         // If a previously-synced flow has moved off PUBLISHED, drop it
         // from the local roster so "Sync from Meta" never leaves a
-        // stale, no-longer-usable flow marked as available. The
-        // (account_id, meta_flow_id) unique index means this matches
-        // at most one row, so a plain success check is enough — no
-        // need to thread through PostgREST's exact-count option.
+        // stale, no-longer-usable flow marked as available. Scope the
+        // delete to origin='synced' so an AUTHORED draft (created in
+        // wacrm, migration 029) is never destroyed by a sync — those
+        // rows are owned by the authoring flow, not the read-only sync.
+        // The (account_id, meta_flow_id) unique index means this matches
+        // at most one row, so a plain success check is enough.
         const { data: deleted, error: delErr } = await supabase
           .from('whatsapp_flows')
           .delete()
           .eq('account_id', accountId)
           .eq('meta_flow_id', f.id)
+          .eq('origin', 'synced')
           .select('id')
         if (delErr) {
           errors.push({ name: f.name, message: delErr.message })

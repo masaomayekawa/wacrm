@@ -51,9 +51,15 @@ interface WhatsAppMessage {
    * to advance the per-contact run.
    */
   interactive?: {
-    type: 'button_reply' | 'list_reply'
+    type: 'button_reply' | 'list_reply' | 'nfm_reply'
     button_reply?: { id: string; title: string }
     list_reply?: { id: string; title: string; description?: string }
+    /**
+     * Delivered when a customer completes a WhatsApp Flow. `response_json`
+     * is a JSON STRING of the submitted fields (Meta includes our
+     * `flow_token` in it). `name` is 'flow'.
+     */
+    nfm_reply?: { response_json?: string; body?: string; name?: string }
   }
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
@@ -564,7 +570,7 @@ async function processMessage(
   }
 
   // Parse message content based on type
-  const { contentText, mediaUrl, mediaType, interactiveReplyId } =
+  const { contentText, mediaUrl, mediaType, interactiveReplyId, flowResponse } =
     await parseMessageContent(message, accessToken)
 
   // Resolve swipe-reply context if present. A missing parent is fine —
@@ -637,6 +643,25 @@ async function processMessage(
   if (msgError) {
     console.error('Error inserting message:', msgError)
     return
+  }
+
+  // Close out the WhatsApp Flow session when a flow completes. Matched by
+  // the flow_token Meta echoes in the nfm_reply; a missing token or no
+  // matching session (e.g. a flow sent before sessions existed) is a
+  // no-op — the readable summary is already in the thread either way.
+  if (flowResponse?.flowToken) {
+    const { error: sessErr } = await supabaseAdmin()
+      .from('whatsapp_flow_sessions')
+      .update({
+        status: 'completed',
+        response_data: flowResponse.data,
+        completed_at: new Date().toISOString(),
+      })
+      .eq('account_id', accountId)
+      .eq('flow_token', flowResponse.flowToken)
+    if (sessErr) {
+      console.error('[webhook] failed to close flow session:', sessErr)
+    }
   }
 
   // Update conversation
@@ -753,6 +778,12 @@ async function parseMessageContent(
    * tap with the right affordance. Null for everything else.
    */
   interactiveReplyId: string | null
+  /**
+   * Populated only for a completed Flow (nfm_reply). Carries the parsed
+   * submitted fields + the flow_token so processMessage can close out
+   * the matching whatsapp_flow_sessions row. Null otherwise.
+   */
+  flowResponse: { flowToken: string | null; data: Record<string, unknown> } | null
 }> {
   // getMediaUrl signature is (mediaId, accessToken) — earlier code had
   // the args swapped, so every verification hit an invalid Meta URL and
@@ -780,6 +811,7 @@ async function parseMessageContent(
     mediaUrl: null,
     mediaType: null,
     interactiveReplyId: null,
+    flowResponse: null,
   }
 
   switch (message.type) {
@@ -857,6 +889,30 @@ async function parseMessageContent(
       return { ...empty, contentText: message.reaction?.emoji || null }
 
     case 'interactive': {
+      // A completed WhatsApp Flow arrives as nfm_reply — parse the
+      // submitted fields, surface a readable summary in the thread, and
+      // carry the flow_token so processMessage can close the session.
+      if (message.interactive?.type === 'nfm_reply') {
+        let data: Record<string, unknown> = {}
+        try {
+          data = JSON.parse(message.interactive.nfm_reply?.response_json ?? '{}')
+        } catch (err) {
+          console.warn('[webhook] nfm_reply response_json parse failed:', err)
+        }
+        const flowToken =
+          typeof data.flow_token === 'string' ? data.flow_token : null
+        // Build a compact human summary, skipping the internal flow_token.
+        const summary = Object.entries(data)
+          .filter(([k]) => k !== 'flow_token')
+          .map(([k, v]) => `${k}: ${String(v)}`)
+          .join(', ')
+        return {
+          ...empty,
+          contentText: summary ? `✅ Flow completed — ${summary}` : '✅ Flow completed',
+          flowResponse: { flowToken, data },
+        }
+      }
+
       // The customer tapped a reply button or a list row on a message
       // we previously sent. Meta delivers `interactive.button_reply` for
       // 3-button messages and `interactive.list_reply` for list messages.

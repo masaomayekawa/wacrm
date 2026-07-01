@@ -212,6 +212,287 @@ export async function getSubscribedApps(
 }
 
 // ============================================================
+// Business encryption (WhatsApp Flows data-exchange endpoint)
+// ============================================================
+//
+// A Flow with a `data_exchange` channel needs Meta to encrypt every
+// endpoint request with a per-message AES key, itself wrapped with an
+// RSA public key the business registers on its phone number. These two
+// helpers set and read that public key.
+//   Reference: /{phone-number-id}/whatsapp_business_encryption
+
+export interface SetBusinessPublicKeyArgs {
+  phoneNumberId: string
+  accessToken: string
+  /** RSA public key in PEM (SPKI) format. */
+  publicKeyPem: string
+}
+
+/**
+ * Register (or replace) the business RSA public key on a phone number.
+ * Idempotent — re-uploading simply replaces the stored key.
+ */
+export async function setBusinessPublicKey(
+  args: SetBusinessPublicKeyArgs,
+): Promise<void> {
+  const { phoneNumberId, accessToken, publicKeyPem } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/whatsapp_business_encryption`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ business_public_key: publicKeyPem }),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
+export interface GetBusinessPublicKeyArgs {
+  phoneNumberId: string
+  accessToken: string
+}
+
+export interface BusinessPublicKeyInfo {
+  business_public_key?: string
+  /** VALID once Meta has verified the key; MISMATCH if it drifted. */
+  business_public_key_signature_status?: 'VALID' | 'MISMATCH'
+}
+
+/**
+ * Read back the registered business public key + its signature status,
+ * so the settings UI can confirm Meta accepted what we uploaded.
+ * Returns an empty object when no key is set yet.
+ */
+export async function getBusinessPublicKey(
+  args: GetBusinessPublicKeyArgs,
+): Promise<BusinessPublicKeyInfo> {
+  const { phoneNumberId, accessToken } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/whatsapp_business_encryption`
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = (await response.json()) as {
+    data?: BusinessPublicKeyInfo[]
+  } & BusinessPublicKeyInfo
+  // Graph returns the fields either at the top level or under `data[0]`
+  // depending on version — normalise to a single object.
+  if (Array.isArray(data.data)) return data.data[0] ?? {}
+  return data
+}
+
+// ============================================================
+// Flows authoring (create / assets / publish / lifecycle)
+// ============================================================
+//
+// Endpoints verified against Meta's Flows API reference:
+//   POST /{waba-id}/flows            create
+//   POST /{flow-id}/assets           upload Flow JSON (multipart)
+//   POST /{flow-id}                  update metadata (name/categories/endpoint_uri)
+//   POST /{flow-id}/publish          publish
+//   POST /{flow-id}/deprecate        deprecate
+//   DELETE /{flow-id}                delete (DRAFT only)
+
+export interface FlowValidationError {
+  error?: string
+  error_type?: string
+  message?: string
+  line_start?: number
+  line_end?: number
+  column_start?: number
+  column_end?: number
+  pointers?: unknown
+}
+
+export interface CreateFlowArgs {
+  wabaId: string
+  accessToken: string
+  name: string
+  categories: string[]
+  endpointUri?: string
+}
+
+/**
+ * Create a DRAFT flow shell (name + categories, optional endpoint). The
+ * Flow JSON is uploaded separately via uploadFlowAsset so we can
+ * surface validation errors distinctly. Returns Meta's new flow id.
+ */
+export async function createFlow(args: CreateFlowArgs): Promise<string> {
+  const { wabaId, accessToken, name, categories, endpointUri } = args
+  const params = new URLSearchParams({
+    name,
+    categories: JSON.stringify(categories),
+  })
+  if (endpointUri) params.set('endpoint_uri', endpointUri)
+
+  const response = await fetch(`${META_API_BASE}/${wabaId}/flows`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params,
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = (await response.json()) as { id?: string }
+  if (!data.id) throw new Error('Meta did not return a flow id.')
+  return data.id
+}
+
+export interface UpdateFlowMetadataArgs {
+  flowId: string
+  accessToken: string
+  name?: string
+  categories?: string[]
+  endpointUri?: string
+}
+
+/** Update a flow's name / categories / endpoint_uri. */
+export async function updateFlowMetadata(
+  args: UpdateFlowMetadataArgs,
+): Promise<void> {
+  const { flowId, accessToken, name, categories, endpointUri } = args
+  const params = new URLSearchParams()
+  if (name) params.set('name', name)
+  if (categories) params.set('categories', JSON.stringify(categories))
+  if (endpointUri) params.set('endpoint_uri', endpointUri)
+
+  const response = await fetch(`${META_API_BASE}/${flowId}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params,
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
+export interface UploadFlowAssetArgs {
+  flowId: string
+  accessToken: string
+  /** The Flow JSON as a string. */
+  flowJson: string
+}
+
+export interface UploadFlowAssetResult {
+  success: boolean
+  validation_errors: FlowValidationError[]
+}
+
+/**
+ * Upload (replace) a flow's JSON asset. Meta validates on upload and
+ * returns `validation_errors` — an empty array means the JSON is
+ * publishable. We surface these to the author verbatim.
+ */
+export async function uploadFlowAsset(
+  args: UploadFlowAssetArgs,
+): Promise<UploadFlowAssetResult> {
+  const { flowId, accessToken, flowJson } = args
+  const form = new FormData()
+  form.set('name', 'flow.json')
+  form.set('asset_type', 'FLOW_JSON')
+  form.set('file', new Blob([flowJson], { type: 'application/json' }), 'flow.json')
+
+  const response = await fetch(`${META_API_BASE}/${flowId}/assets`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  })
+  const data = (await response.json().catch(() => ({}))) as {
+    success?: boolean
+    validation_errors?: FlowValidationError[]
+    error?: { message?: string }
+  }
+  if (!response.ok) {
+    throw new Error(data?.error?.message ?? `Meta API error: ${response.status}`)
+  }
+  return {
+    success: data.success ?? true,
+    validation_errors: data.validation_errors ?? [],
+  }
+}
+
+/** Publish a flow. Fails on Meta's side if validation_errors are present. */
+export async function publishFlow(
+  flowId: string,
+  accessToken: string,
+): Promise<void> {
+  const response = await fetch(`${META_API_BASE}/${flowId}/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
+/** Deprecate a published flow (it can no longer be sent). */
+export async function deprecateFlow(
+  flowId: string,
+  accessToken: string,
+): Promise<void> {
+  const response = await fetch(`${META_API_BASE}/${flowId}/deprecate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
+/** Delete a DRAFT flow. Meta rejects deletes of published flows. */
+export async function deleteFlow(
+  flowId: string,
+  accessToken: string,
+): Promise<void> {
+  const response = await fetch(`${META_API_BASE}/${flowId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
+export interface MetaFlowDetail {
+  id: string
+  name?: string
+  status?: string
+  categories?: string[]
+  validation_errors?: FlowValidationError[]
+  json_version?: string
+  data_api_version?: string
+  endpoint_uri?: string
+}
+
+/** Read a flow's current metadata + validation state from Meta. */
+export async function getFlowDetail(
+  flowId: string,
+  accessToken: string,
+): Promise<MetaFlowDetail> {
+  const fields =
+    'id,name,status,categories,validation_errors,json_version,data_api_version,endpoint_uri'
+  const response = await fetch(
+    `${META_API_BASE}/${flowId}?fields=${fields}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  )
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  return response.json()
+}
+
+// ============================================================
 // Sending
 // ============================================================
 
@@ -240,6 +521,50 @@ export async function sendTextMessage(
     to,
     type: 'text',
     text: { body: text },
+  }
+  if (contextMessageId) {
+    body.context = { message_id: contextMessageId }
+  }
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}
+
+export interface SendFlowMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  /** Pre-built interactive.flow payload (see buildFlowInteractive). */
+  interactive: FlowInteractivePayload
+  contextMessageId?: string
+}
+
+/**
+ * Send a WhatsApp Flow as an interactive message. The caller builds the
+ * `interactive` payload with `buildFlowInteractive` (pure + testable);
+ * this just performs the network call, mirroring sendTextMessage.
+ */
+export async function sendFlowMessage(
+  args: SendFlowMessageArgs,
+): Promise<MetaSendResult> {
+  const { phoneNumberId, accessToken, to, interactive, contextMessageId } = args
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'interactive',
+    interactive,
   }
   if (contextMessageId) {
     body.context = { message_id: contextMessageId }
@@ -526,6 +851,7 @@ export async function uploadResumableMedia(
 // ============================================================
 
 import type { MetaTemplateSubmitPayload } from './template-components'
+import type { FlowInteractivePayload } from './flow-send'
 
 export interface SubmitMessageTemplateArgs {
   wabaId: string

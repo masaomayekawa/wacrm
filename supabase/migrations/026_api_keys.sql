@@ -1,3 +1,5 @@
+SET search_path = public, extensions;
+
 -- ============================================================
 -- 026_api_keys.sql — Public API credentials (groundwork)
 --

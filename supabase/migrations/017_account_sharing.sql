@@ -1,3 +1,5 @@
+SET search_path = public, extensions;
+
 -- ============================================================
 -- 017_account_sharing.sql — Multi-user accounts (foundation)
 --

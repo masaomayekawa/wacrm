@@ -300,7 +300,54 @@ export interface WhatsAppFlow {
   data_api_version?: string;
   endpoint_uri?: string;
   validation_errors?: unknown;
+  /** synced = pulled from Meta (read-only); authored = created in wacrm. */
+  origin: 'synced' | 'authored';
+  /** The authored Flow JSON (null for synced rows). */
+  flow_json?: unknown;
+  /** data_exchange = dynamic screens calling our endpoint; static = self-contained. */
+  data_channel: 'static' | 'data_exchange';
   synced_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Valid Meta WhatsApp Flow categories (distinct from template categories). */
+export const WHATSAPP_FLOW_CATEGORIES = [
+  'SIGN_UP',
+  'SIGN_IN',
+  'APPOINTMENT_BOOKING',
+  'LEAD_GENERATION',
+  'CONTACT_US',
+  'CUSTOMER_SUPPORT',
+  'SURVEY',
+  'OTHER',
+] as const;
+
+export type WhatsAppFlowCategory = (typeof WHATSAPP_FLOW_CATEGORIES)[number];
+
+/**
+ * Per-screen data-source adapter for a `data_exchange` flow — lets the
+ * endpoint fetch the next screen's data from an external API without a
+ * code change per flow. See migration 029.
+ */
+export interface WhatsAppFlowScreenSource {
+  id: string;
+  account_id: string;
+  whatsapp_flow_id: string;
+  /** Screen id submitted that triggers this fetch ('__INIT__' for INIT). */
+  trigger_screen: string;
+  next_screen: string;
+  request_url: string;
+  request_method: 'GET' | 'POST';
+  /** Field names from the incoming screen data to forward to the API. */
+  forward_fields: string[];
+  /** Dot path to the array/object in the API response ('' = whole body). */
+  response_items_path?: string;
+  /** Key the shaped result is exposed under in the next screen's data. */
+  response_target_key: string;
+  /** Item fields that become {id}/{title} for WhatsApp dropdowns. */
+  item_id_field?: string;
+  item_title_field?: string;
   created_at: string;
   updated_at: string;
 }
